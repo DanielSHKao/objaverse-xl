@@ -16,10 +16,9 @@ import fsspec
 import GPUtil
 import pandas as pd
 from loguru import logger
-
+import cv2
 import objaverse.xl as oxl
 from objaverse.utils import get_uid_from_str
-
 
 def log_processed_object(csv_filename: str, *args) -> None:
     """Log when an object is done being used.
@@ -57,6 +56,19 @@ def zipdir(path: str, ziph: zipfile.ZipFile) -> None:
             arcname = os.path.join(os.path.basename(root), file)
             ziph.write(os.path.join(root, file), arcname=arcname)
 
+def images_to_video(image_folder, video_name, num_renders=120, fps=30):
+    images = [f"{img:03d}.png" for img in range(num_renders) if os.path.exists(os.path.join(image_folder, f"{img:03d}.png"))]
+    frame = cv2.imread(os.path.join(image_folder, images[0]))
+    height, width, _ = frame.shape
+
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') # Be sure to use lower case
+    video = cv2.VideoWriter(video_name, fourcc, 30, (width, height))
+
+    for image in images:
+        video.write(cv2.imread(os.path.join(image_folder, image)))
+
+    cv2.destroyAllWindows()
+    video.release()
 
 def handle_found_object(
     local_path: str,
@@ -70,6 +82,7 @@ def handle_found_object(
     render_timeout: int,
     successful_log_file: Optional[str] = "handle-found-object-successful.csv",
     failed_log_file: Optional[str] = "handle-found-object-failed.csv",
+    save_vid=False
 ) -> bool:
     """Called when an object is successfully found and downloaded.
 
@@ -143,14 +156,14 @@ def handle_found_object(
         command = f"blender-3.2.2-linux-x64/blender --background --python blender_script.py -- {args}"
         if using_gpu:
             command = f"export DISPLAY=:0.{gpu_i} && {command}"
-
+        
         # render the object (put in dev null)
         subprocess.run(
             ["bash", "-c", command],
             timeout=render_timeout,
             check=False,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            #stderr=subprocess.DEVNULL,
         )
 
         # check that the renders were saved successfully
@@ -183,7 +196,9 @@ def handle_found_object(
         metadata_file["metadata"] = metadata
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata_file, f, indent=2, sort_keys=True)
-
+        
+        if save_vid:
+            images_to_video(target_directory, os.path.join(target_directory, f"{save_uid}.mp4"))
         # Make a zip of the target_directory.
         # Keeps the {save_uid} directory structure when unzipped
         with zipfile.ZipFile(
@@ -333,20 +348,22 @@ def handle_missing_object(
     log_processed_object(log_file, file_identifier, sha256)
 
 
-def get_example_objects() -> pd.DataFrame:
+def get_example_objects(load_path="example-objects.json") -> pd.DataFrame:
     """Returns a DataFrame of example objects to use for debugging."""
-    return pd.read_json("example-objects.json", orient="records")
+    return pd.read_json(load_path, orient="records")
 
 
 def render_objects(
-    render_dir: str = "~/.objaverse",
+    render_dir: str = "/home/v-shikao/objaverse-xl/test_data/",
     download_dir: Optional[str] = None,
-    num_renders: int = 12,
+    num_renders: int = 100,
     processes: Optional[int] = None,
     save_repo_format: Optional[Literal["zip", "tar", "tar.gz", "files"]] = None,
     only_northern_hemisphere: bool = False,
-    render_timeout: int = 300,
-    gpu_devices: Optional[Union[int, List[int]]] = None,
+    render_timeout: int = 200,
+    gpu_devices: Optional[Union[int, List[int]]] = 1.,
+    object_df = None,
+    save_vid=False
 ) -> None:
     """Renders objects in the Objaverse-XL dataset with Blender
 
@@ -397,10 +414,10 @@ def render_objects(
     logger.info(f"Using {parsed_gpu_devices} GPU devices for rendering.")
 
     if processes is None:
-        processes = multiprocessing.cpu_count() * 3
+        processes = multiprocessing.cpu_count() * 5
 
     # get the objects to render
-    objects = get_example_objects()
+    objects = get_example_objects() if object_df is None else object_df
     objects.iloc[0]["fileIdentifier"]
     objects = objects.copy()
     logger.info(f"Provided {len(objects)} objects to render.")
@@ -437,6 +454,7 @@ def render_objects(
             only_northern_hemisphere=only_northern_hemisphere,
             gpu_devices=parsed_gpu_devices,
             render_timeout=render_timeout,
+            save_vid=save_vid
         ),
         handle_new_object=handle_new_object,
         handle_modified_object=partial(

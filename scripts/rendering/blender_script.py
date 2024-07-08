@@ -91,13 +91,40 @@ def _sample_spherical(
             correct = True
     return vec
 
+def _sample_circle(
+    radius_min: float = 1.2,
+    radius_max: float = 1.8,
+    maxz: float = 1.6,
+    minz: float = -0.75,
+    num_renders: int = 12,
+    idx = None,
+    prev_z = None,
+    prev_radius = None
+) -> np.ndarray:
+    correct = False
+    vec = np.array([0, 0, 0])
+    theta = 2 * np.pi/num_renders * idx
+    while not correct:
+        phi = np.random.uniform(-np.pi/9, np.pi/6,1)[0] if prev_z is None else prev_z
+        vec = np.array([np.cos(phi)*np.cos(theta), np.cos(phi)*np.sin(theta), np.sin(phi)])
+        #         vec[2] = np.abs(vec[2])
+        radius = np.random.uniform(radius_min, radius_max, 1)[0] if prev_radius is None else prev_radius
+        vec = vec / np.linalg.norm(vec, axis=0) * radius
+        if maxz > vec[2] > minz:
+            correct = True
+    return vec, phi, radius
 
 def randomize_camera(
-    radius_min: float = 1.5,
-    radius_max: float = 2.2,
-    maxz: float = 2.2,
-    minz: float = -2.2,
+    num_renders: int,
+    radius_min: float = 2.2,
+    radius_max: float = 3.5,
+    maxz: float = 2.0,
+    minz: float = -0.7,
     only_northern_hemisphere: bool = False,
+    circle_traj:bool = True,
+    idx = None,
+    prev_z = None,
+    prev_radius = None
 ) -> bpy.types.Object:
     """Randomizes the camera location and rotation inside of a spherical shell.
 
@@ -115,10 +142,17 @@ def randomize_camera(
     Returns:
         bpy.types.Object: The camera object.
     """
-
-    x, y, z = _sample_spherical(
-        radius_min=radius_min, radius_max=radius_max, maxz=maxz, minz=minz
-    )
+    if circle_traj:
+        vec, z_init, radius_init = _sample_circle(
+            radius_min=radius_min, radius_max=radius_max, maxz=maxz, minz=minz, num_renders=num_renders, idx=idx, prev_z=prev_z, prev_radius=prev_radius
+        ) 
+        x, y, z = vec
+    else:
+        x, y, z = _sample_spherical(
+            radius_min=radius_min, radius_max=radius_max, maxz=maxz, minz=minz,
+        ) 
+        z_init = None
+        radius_init = None
     camera = bpy.data.objects["Camera"]
 
     # only positive z
@@ -131,7 +165,8 @@ def randomize_camera(
     rot_quat = direction.to_track_quat("-Z", "Y")
     camera.rotation_euler = rot_quat.to_euler()
 
-    return camera
+    return camera, z_init, radius_init
+
 
 
 def _set_camera_at_size(i: int, scale: float = 1.5) -> bpy.types.Object:
@@ -809,12 +844,19 @@ def render_object(
 
     # randomize the lighting
     randomize_lighting()
-
+    
+    prev_z = None
+    prev_radius = None
     # render the images
     for i in range(num_renders):
         # set camera
-        camera = randomize_camera(
+        camera, prev_z, prev_radius = randomize_camera(
             only_northern_hemisphere=only_northern_hemisphere,
+            num_renders=num_renders,
+            circle_traj=True,
+            prev_z=prev_z,
+            prev_radius=prev_radius,
+            idx=i
         )
 
         # render the image
